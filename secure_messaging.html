@@ -1,0 +1,215 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Secure Messenger – AES + RSA Hybrid Encryption</title>
+<style>
+  :root{
+    --bg:#eef2f1; --panel:#ffffff; --ink:#1b2a2f; --muted:#5c6f75;
+    --line:#cfdad8; --teal:#0f6b63; --teal-d:#0a4f49; --amber:#b4570a;
+    --code:#f3f6f5; --ok:#1c7a3e; --err:#b3261e;
+  }
+  @media (prefers-color-scheme: dark){
+    :root{--bg:#101a1c; --panel:#172427; --ink:#e4eeee; --muted:#8fa5a8; --line:#2a3c40;
+      --teal:#3fb5a8; --teal-d:#5fd0c3; --amber:#e59a4d; --code:#0f1b1d; --ok:#5fcf86; --err:#ff8a80;}
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font:16px/1.55 "Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;padding:24px 16px 48px}
+  .wrap{max-width:1000px;margin:0 auto}
+  h1{font-family:Georgia,"Times New Roman",serif;font-size:2rem;margin:0 0 4px;letter-spacing:-.01em}
+  .sub{color:var(--muted);margin:0 0 24px;max-width:70ch}
+  .grid{display:grid;grid-template-columns:1fr 1fr;gap:18px}
+  @media(max-width:760px){.grid{grid-template-columns:1fr}}
+  .panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px}
+  .panel.sender{border-top:4px solid var(--teal)}
+  .panel.receiver{border-top:4px solid var(--amber)}
+  h2{font-size:1.15rem;margin:0 0 12px}
+  label{display:block;font-weight:600;font-size:.9rem;margin:14px 0 4px}
+  textarea,input[type=text]{width:100%;border:1px solid var(--line);border-radius:6px;
+    background:var(--code);color:var(--ink);padding:10px;font:inherit}
+  textarea.mono,.out{font-family:Consolas,"Courier New",monospace;font-size:.78rem}
+  textarea{resize:vertical;min-height:84px}
+  .out{background:var(--code);border:1px solid var(--line);border-radius:6px;padding:10px;
+    word-break:break-all;min-height:40px;max-height:140px;overflow:auto;white-space:pre-wrap}
+  button{background:var(--teal);color:#fff;border:0;border-radius:6px;padding:10px 16px;
+    font:600 .95rem inherit;font-family:inherit;cursor:pointer;margin-top:12px}
+  .receiver button{background:var(--amber)}
+  button.ghost{background:transparent;color:var(--teal);border:1px solid var(--teal);margin-left:8px}
+  button:hover{filter:brightness(1.1)}
+  button:focus-visible,textarea:focus-visible,input:focus-visible{outline:3px solid var(--amber);outline-offset:2px}
+  button:disabled{opacity:.5;cursor:not-allowed}
+  .status{margin-top:10px;font-size:.9rem;min-height:1.3em}
+  .ok{color:var(--ok)} .err{color:var(--err)}
+  .keys{margin-bottom:18px}
+  .log{margin-top:18px}
+  .log ol{margin:0;padding-left:20px}
+  .log li{margin:4px 0;font-size:.92rem}
+  .tag{display:inline-block;font-size:.75rem;padding:1px 8px;border-radius:99px;
+    border:1px solid var(--line);color:var(--muted);margin-left:6px;font-weight:400}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Secure Messenger</h1>
+  <p class="sub">Hybrid encryption demo: the message is encrypted with a random AES-256 key, and that AES key is then locked with the recipient's RSA public key.</p>
+
+  <!-- RSA key pair -->
+  <div class="panel keys">
+    <h2>1. Recipient RSA key pair <span class="tag">RSA-OAEP 2048-bit</span></h2>
+    <button id="genKeys">Generate RSA keys</button>
+    <div class="status" id="keyStatus"></div>
+    <label>Public key (shared with sender)</label>
+    <div class="out" id="pubOut">Not generated yet.</div>
+    <label>Private key (kept by recipient)</label>
+    <div class="out" id="privOut">Not generated yet.</div>
+  </div>
+
+  <div class="grid">
+    <!-- Sender -->
+    <section class="panel sender">
+      <h2>2. Sender: encrypt <span class="tag">AES-256-GCM + RSA</span></h2>
+      <label for="msg">Message</label>
+      <textarea id="msg" placeholder="Type a secret message…">Meet me at the library at 5 PM.</textarea>
+      <button id="encBtn" disabled>Encrypt message</button>
+      <button class="ghost" id="sendBtn" disabled>Send to recipient</button>
+      <div class="status" id="encStatus"></div>
+
+      <label>AES key (plain, generated per message)</label>
+      <div class="out" id="aesPlain">–</div>
+      <label>Encrypted message (AES ciphertext, Base64)</label>
+      <div class="out" id="cipherOut">–</div>
+      <label>IV / nonce (Base64)</label>
+      <div class="out" id="ivOut">–</div>
+      <label>Encrypted AES key (RSA ciphertext, Base64)</label>
+      <div class="out" id="encKeyOut">–</div>
+    </section>
+
+    <!-- Receiver -->
+    <section class="panel receiver">
+      <h2>3. Recipient: decrypt</h2>
+      <label for="inCipher">Encrypted message</label>
+      <textarea id="inCipher" class="mono" placeholder="Arrives from sender…"></textarea>
+      <label for="inIv">IV</label>
+      <input type="text" id="inIv" class="mono">
+      <label for="inKey">Encrypted AES key</label>
+      <textarea id="inKey" class="mono" placeholder="Arrives from sender…"></textarea>
+      <button id="decBtn" disabled>Decrypt message</button>
+      <div class="status" id="decStatus"></div>
+
+      <label>AES key recovered with RSA private key</label>
+      <div class="out" id="aesRec">–</div>
+      <label>Decrypted message</label>
+      <div class="out" id="plainOut" style="font-family:inherit;font-size:1rem">–</div>
+    </section>
+  </div>
+
+  <div class="panel log">
+    <h2>Process log</h2>
+    <ol id="log"><li>Waiting for RSA keys…</li></ol>
+  </div>
+</div>
+
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const enc = new TextEncoder(), dec = new TextDecoder();
+  let rsaPair = null, aesKey = null, packet = null;
+
+  const b64 = buf => btoa(String.fromCharCode(...new Uint8Array(buf)));
+  const unb64 = s => Uint8Array.from(atob(s.trim()), c => c.charCodeAt(0));
+  const pem = (label, buf) => {
+    const body = b64(buf).match(/.{1,64}/g).join("\n");
+    return `-----BEGIN ${label}-----\n${body}\n-----END ${label}-----`;
+  };
+  const log = (t, first) => {
+    const ol = $("log");
+    if (first) ol.innerHTML = "";
+    const li = document.createElement("li");
+    li.textContent = t;
+    ol.appendChild(li);
+  };
+  const status = (id, text, ok) => {
+    const el = $(id); el.textContent = text; el.className = "status " + (ok ? "ok" : "err");
+  };
+
+  if (!window.crypto || !crypto.subtle) {
+    status("keyStatus", "Web Crypto is unavailable. Open this file over https or localhost.", false);
+    $("genKeys").disabled = true;
+  }
+
+  // 1. Generate RSA key pair
+  $("genKeys").onclick = async () => {
+    try {
+      $("genKeys").disabled = true;
+      rsaPair = await crypto.subtle.generateKey(
+        { name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+        true, ["encrypt", "decrypt"]);
+      $("pubOut").textContent = pem("PUBLIC KEY", await crypto.subtle.exportKey("spki", rsaPair.publicKey));
+      $("privOut").textContent = pem("PRIVATE KEY", await crypto.subtle.exportKey("pkcs8", rsaPair.privateKey));
+      status("keyStatus", "RSA key pair ready.", true);
+      $("encBtn").disabled = false;
+      $("genKeys").disabled = false;
+      $("genKeys").textContent = "Regenerate RSA keys";
+      log("RSA-2048 key pair generated for the recipient.", true);
+    } catch (e) { status("keyStatus", "Key generation failed: " + e.message, false); $("genKeys").disabled = false; }
+  };
+
+  // 2. Encrypt: AES for message, RSA for AES key
+  $("encBtn").onclick = async () => {
+    const text = $("msg").value;
+    if (!text.trim()) return status("encStatus", "Enter a message first.", false);
+    try {
+      aesKey = await crypto.subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+      log("Sender generated a random 256-bit AES key.");
+      const iv = crypto.getRandomValues(new Uint8Array(12));
+      const cipher = await crypto.subtle.encrypt({ name: "AES-GCM", iv }, aesKey, enc.encode(text));
+      log("Message encrypted with AES-256-GCM.");
+      const rawAes = await crypto.subtle.exportKey("raw", aesKey);
+      const wrapped = await crypto.subtle.encrypt({ name: "RSA-OAEP" }, rsaPair.publicKey, rawAes);
+      log("AES key encrypted with the recipient's RSA public key.");
+
+      packet = { cipher: b64(cipher), iv: b64(iv), key: b64(wrapped) };
+      $("aesPlain").textContent = b64(rawAes);
+      $("cipherOut").textContent = packet.cipher;
+      $("ivOut").textContent = packet.iv;
+      $("encKeyOut").textContent = packet.key;
+      status("encStatus", "Encrypted. Only the RSA-protected key and ciphertext need to be sent.", true);
+      $("sendBtn").disabled = false;
+    } catch (e) { status("encStatus", "Encryption failed: " + e.message, false); }
+  };
+
+  // Simulate transmission
+  $("sendBtn").onclick = () => {
+    $("inCipher").value = packet.cipher;
+    $("inIv").value = packet.iv;
+    $("inKey").value = packet.key;
+    $("decBtn").disabled = false;
+    log("Encrypted message, IV and encrypted AES key sent to the recipient.");
+    status("encStatus", "Sent. See the recipient panel.", true);
+  };
+  ["inCipher", "inIv", "inKey"].forEach(id => $(id).addEventListener("input", () => {
+    $("decBtn").disabled = !rsaPair;
+  }));
+
+  // 3. Decrypt: RSA for AES key, AES for message
+  $("decBtn").onclick = async () => {
+    try {
+      const rawAes = await crypto.subtle.decrypt({ name: "RSA-OAEP" }, rsaPair.privateKey, unb64($("inKey").value));
+      log("Recipient decrypted the AES key with the RSA private key.");
+      $("aesRec").textContent = b64(rawAes);
+      const key = await crypto.subtle.importKey("raw", rawAes, "AES-GCM", false, ["decrypt"]);
+      const plain = await crypto.subtle.decrypt({ name: "AES-GCM", iv: unb64($("inIv").value) }, key, unb64($("inCipher").value));
+      $("plainOut").textContent = dec.decode(plain);
+      log("Message decrypted with the recovered AES key.");
+      status("decStatus", "Decryption successful.", true);
+    } catch (e) {
+      $("plainOut").textContent = "–";
+      status("decStatus", "Decryption failed. Check that the key, IV and ciphertext are unchanged and match the current RSA key pair.", false);
+    }
+  };
+})();
+</script>
+</body>
+</html>
